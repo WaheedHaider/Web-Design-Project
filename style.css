@@ -1,0 +1,45 @@
+/* Basic reset & typography */
+body {
+  margin:0; padding:0;
+  font-family: Arial, sans-serif;
+  background: #f9f9f9;
+  color: #333;
+}
+header, main, footer {
+  padding: 20px;
+  text-align: center;
+}
+header {
+  background: #222; color: white;
+}
+header a {
+  color: white; text-decoration: none; margin: 0 10px;
+}
+header a:hover {
+  text-decoration: underline;
+}
+h1 { margin-bottom: 10px; }
+h2 { margin-top: 30px; margin-bottom: 15px; }
+.button {
+  display: inline-block;
+  background: #ff6600; color: white;
+  padding: 10px 20px;
+  border-radius: 4px;
+  text-decoration: none;
+}
+.button:hover {
+  background: #e65c00;
+}
+footer {
+  background: #222; color: #ccc; font-size: 0.9em;
+  margin-top: 40px;
+}
+img {
+  max-width: 50%; height: auto;
+}
+.nav-links {
+  margin: 15px 0;
+}
+.nav-links a {
+  margin: 0 10px;
+}

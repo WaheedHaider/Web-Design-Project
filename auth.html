@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FitLife Gym – Login / Sign Up</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>FitLife Gym</h1>
+    <div class="nav-links">
+      <a href="home.html">Home</a>
+      <a href="about.html">About</a>
+      <a href="classes.html">Classes</a>
+      <a href="contact.html">Contact</a>
+      <a href="auth.html">Login / Sign-Up</a>
+    </div>
+  </header>
+
+  <main>
+    <h2>Sign Up</h2>
+    <form id="signupForm" onsubmit="return validateForm()">
+      <input type="text" id="name" placeholder="Your Name"><br><br>
+      <input type="email" id="email" placeholder="Email"><br><br>
+      <input type="password" id="password" placeholder="Password"><br><br>
+      <input type="password" id="confirmPassword" placeholder="Confirm Password"><br><br>
+      <button type="submit">Register</button>
+    </form>
+  </main>
+
+  <footer>
+    <p>© 2025 FitLife Gym</p>
+  </footer>
+
+  <script>
+    function validateForm() {
+      const name = document.getElementById('name').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const confirmPassword = document.getElementById('confirmPassword').value;
+
+      if (!name) {
+        alert('Name is required');
+        return false;
+      }
+      const emailPattern = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
+      if (!emailPattern.test(email)) {
+        alert('Please enter a valid email address');
+        return false;
+      }
+      if (password.length < 6) {
+        alert('Password must be at least 6 characters');
+        return false;
+      }
+      if (password !== confirmPassword) {
+        alert('Passwords do not match');
+        return false;
+      }
+      alert('Registration successful!');
+      // Here you might send form data to server or redirect
+      return true;
+    }
+  </script>
+</body>
+</html>
