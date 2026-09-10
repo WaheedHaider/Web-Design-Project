@@ -23,10 +23,43 @@
     <p>Address: 123 Fitness Ave, Ghaziabad, Delhi-NCR</p>
     <p>Phone: +91 9452462949</p>
     <p>Email: info@fitlifegym.com</p>
+
+    <h2>In Case of Emergency</h2>
+    <p>Feeling unwell or injured during a workout? Find the nearest hospital.</p>
+    <p><button class="button" id="find-hospital-btn">Find Nearest Hospital</button></p>
+    <p id="hospital-status"></p>
   </main>
 
   <footer>
     <p>© 2025 FitLife Gym</p>
   </footer>
+
+  <script>
+    document.getElementById('find-hospital-btn').addEventListener('click', function () {
+      var status = document.getElementById('hospital-status');
+
+      if (!navigator.geolocation) {
+        status.textContent = 'Location services are not supported by your browser.';
+        return;
+      }
+
+      status.textContent = 'Locating you…';
+
+      navigator.geolocation.getCurrentPosition(
+        function (position) {
+          var lat = position.coords.latitude;
+          var lng = position.coords.longitude;
+          status.textContent = '';
+          window.open(
+            'https://www.google.com/maps/search/hospital/@' + lat + ',' + lng + ',14z',
+            '_blank'
+          );
+        },
+        function () {
+          status.textContent = 'Could not get your location. Please enable location access and try again.';
+        }
+      );
+    });
+  </script>
 </body>
 </html>
