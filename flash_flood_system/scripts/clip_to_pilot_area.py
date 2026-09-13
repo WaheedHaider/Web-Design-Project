@@ -10,11 +10,18 @@ Run this LOCALLY, on the machine holding the full-size downloads — it turns
         --input-dir  /path/to/your/downloads \
         --output-dir ./pilot_clipped
 
+HydroSHEDS/HydroBASINS/HydroRIVERS downloads usually arrive as .zip archives
+(sometimes with the shapefile nested a folder or two deep) — these are
+auto-extracted into output-dir/_extracted/ before scanning, so you don't need
+to unzip anything by hand first.
+
 Rasters are clipped with a windowed read (the full array is never loaded, so
 a multi-GB DEM won't exhaust RAM) and rewritten with DEFLATE compression.
 Vectors are filtered by bounding box against the file's spatial index and
 written as GeoPackage, so each one uploads as a single file instead of the
-.shp/.dbf/.shx/.prj sidecar set.
+.shp/.dbf/.shx/.prj sidecar set. Non-geospatial files (e.g. a landslide
+report PDF) aren't clippable, so they're copied through to the output
+folder unchanged rather than silently dropped.
 
 WHY THE DEFAULT EXTENT IS GENEROUS
 Flash-flood hydrology depends on upstream contributing area, which frequently
@@ -30,7 +37,9 @@ upstream catchments and recomputed values would be wrong near the edges.
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
+import zipfile
 from pathlib import Path
 
 import geopandas as gpd
@@ -126,15 +135,59 @@ def clip_vector(src_path: Path, dst_path: Path, bbox_4326: tuple[float, float, f
     return True
 
 
-def collect_inputs(input_dir: Path) -> list[Path]:
+def extract_zips(input_dir: Path, extract_root: Path) -> list[Path]:
+    """
+    HydroSHEDS/HydroBASINS/HydroRIVERS downloads are typically delivered as
+    zips, often with the shapefile nested inside its own subfolder. Extracts
+    each zip found under input_dir into extract_root/<zip stem>/, skipping
+    ones already extracted (safe to re-run). Returns the extraction dirs.
+    Never writes into input_dir itself, so the original download folder
+    (which may be an OneDrive-synced path) is never modified.
+    """
+    extracted_dirs = []
+    for zip_path in sorted(input_dir.rglob("*.zip")):
+        # Spaces in "flow acc.zip" etc. are fine — Path handles them as-is.
+        target = extract_root / zip_path.stem
+        if target.exists() and any(target.iterdir()):
+            print(f"[{zip_path.relative_to(input_dir)}]  already extracted -> {target}")
+            extracted_dirs.append(target)
+            continue
+
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(target)
+            print(f"[{zip_path.relative_to(input_dir)}]  extracted -> {target}")
+            extracted_dirs.append(target)
+        except zipfile.BadZipFile:
+            print(f"[{zip_path.relative_to(input_dir)}]  SKIP (not a valid zip file)")
+
+    return extracted_dirs
+
+
+def collect_inputs(search_dir: Path) -> list[Path]:
     files = []
-    for path in sorted(input_dir.rglob("*")):
+    for path in sorted(search_dir.rglob("*")):
         if not path.is_file():
             continue
         suffix = path.suffix.lower()
         if suffix in RASTER_SUFFIXES or suffix in VECTOR_SUFFIXES:
             files.append(path)
     return files
+
+
+def collect_passthrough_files(input_dir: Path) -> list[Path]:
+    """
+    Non-geospatial files sitting directly in input_dir (e.g. a landslide
+    inventory PDF/report, a readme) that clip_raster/clip_vector can't
+    process but shouldn't silently vanish from the upload either — these get
+    copied through to the output folder unchanged.
+    """
+    skip_suffixes = RASTER_SUFFIXES | VECTOR_SUFFIXES | {".zip"}
+    return [
+        p for p in sorted(input_dir.rglob("*"))
+        if p.is_file() and p.suffix.lower() not in skip_suffixes
+    ]
 
 
 def main() -> int:
@@ -155,7 +208,12 @@ def main() -> int:
         "--buffer-deg", type=float, default=0.1,
         help="Degrees of padding added to the extent (default 0.1 ~ 11km) to retain upstream terrain",
     )
-    parser.add_argument("--dry-run", action="store_true", help="List what would be clipped, write nothing")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="List what would be clipped without writing clipped output. Zips still get "
+             "extracted (into output-dir/_extracted/) so their contents can be listed — "
+             "re-run without --dry-run afterward and the extraction is reused, not redone.",
+    )
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir).expanduser().resolve()
@@ -179,22 +237,49 @@ def main() -> int:
     b = args.buffer_deg
     bbox = (bbox[0] - b, bbox[1] - b, bbox[2] + b, bbox[3] + b)
 
-    files = collect_inputs(input_dir)
-    total_in = sum(f.stat().st_size for f in files)
+    # Zips are extracted into output_dir/_extracted/<zip stem>/ — never into
+    # input_dir itself, so a source folder synced by OneDrive/Drive is never
+    # written to by this script.
+    extract_root = output_dir / "_extracted"
+    print("--- Extracting archives ---")
+    extracted_dirs = extract_zips(input_dir, extract_root)
+    if not extracted_dirs:
+        print("(no .zip files found)")
+    print()
+
+    # (source_path, output-relative-path) pairs. Files already sitting loose
+    # in input_dir keep their path relative to it; files that came out of a
+    # zip are namespaced under that zip's name so e.g. every HydroRIVERS
+    # shapefile doesn't collide with every HydroBASINS one on disk.
+    file_pairs: list[tuple[Path, Path]] = []
+    for f in collect_inputs(input_dir):
+        file_pairs.append((f, f.relative_to(input_dir)))
+    for extracted_dir in extracted_dirs:
+        for f in collect_inputs(extracted_dir):
+            file_pairs.append((f, Path(extracted_dir.name) / f.relative_to(extracted_dir)))
+
+    passthrough = collect_passthrough_files(input_dir)
+
+    total_in = sum(f.stat().st_size for f, _ in file_pairs) + sum(f.stat().st_size for f in passthrough)
 
     print(f"Pilot extent : {tuple(round(v, 3) for v in bbox)}  ({source}, +{b}° buffer)")
     print(f"Input        : {input_dir}")
-    print(f"Found        : {len(files)} geospatial files, {human_size(total_in)}")
+    print(f"Found        : {len(file_pairs)} geospatial files + {len(passthrough)} other files, {human_size(total_in)}")
     print(f"Output       : {output_dir}\n")
 
+    if passthrough:
+        print("Files that aren't clippable geospatial data (will be copied through as-is):")
+        for f in passthrough:
+            print(f"  {f.relative_to(input_dir)}  ({human_size(f.stat().st_size)})")
+        print()
+
     if args.dry_run:
-        for f in files:
-            print(f"  would clip {f.relative_to(input_dir)}  ({human_size(f.stat().st_size)})")
+        for src, rel in file_pairs:
+            print(f"  would clip {rel}  ({human_size(src.stat().st_size)})")
         return 0
 
     written = 0
-    for src in files:
-        rel = src.relative_to(input_dir)
+    for src, rel in file_pairs:
         print(f"[{rel}]  {human_size(src.stat().st_size)}")
         try:
             if src.suffix.lower() in RASTER_SUFFIXES:
@@ -212,8 +297,22 @@ def main() -> int:
             if out.exists():
                 print(f"  -> {human_size(out.stat().st_size)}")
 
+    if passthrough:
+        print("\n--- Copying non-geospatial files through unchanged ---")
+        for src in passthrough:
+            rel = src.relative_to(input_dir)
+            dst = output_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            print(f"  copied {rel}")
+
+    # _extracted/ holds the raw unzipped originals, not deliverables — clean
+    # it up so it isn't counted or uploaded alongside the actual clipped output.
+    if extract_root.exists():
+        shutil.rmtree(extract_root)
+
     total_out = sum(f.stat().st_size for f in output_dir.rglob("*") if f.is_file())
-    print(f"\nClipped {written}/{len(files)} files")
+    print(f"\nClipped {written}/{len(file_pairs)} geospatial files, copied {len(passthrough)} other file(s)")
     print(f"{human_size(total_in)} -> {human_size(total_out)}")
     if total_in and total_out:
         print(f"Reduction: {100 * (1 - total_out / total_in):.1f}%")
