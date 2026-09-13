@@ -14,8 +14,8 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
-from config.settings import CONFIG
-from database.db_utils import get_engine, query_df
+from config.settings import CONFIG, MODEL_VERSION
+from database.db_utils import query_df, upsert_dataframe
 
 AGG_CFG = CONFIG["ward_aggregation"]
 
@@ -77,14 +77,20 @@ def aggregate_ward_risk(cell_predictions: pd.DataFrame, exposure_by_cell: pd.Ser
     return result
 
 
-def aggregate_for_timestamp(valid_for: pd.Timestamp) -> pd.DataFrame:
+def aggregate_for_timestamp(valid_for: pd.Timestamp, model_version: str = MODEL_VERSION) -> pd.DataFrame:
+    # combined_risk IS NOT NULL: only cells predict.py has actually finished
+    # scoring for this timestamp are counted, not ones still mid-pipeline
+    # with only a hydrological_threat written so far.
     sql = """
         SELECT gc.ward_id, rp.cell_id, rp.combined_risk, rp.confidence
         FROM risk_predictions rp
         JOIN grid_cells gc ON gc.cell_id = rp.cell_id
-        WHERE rp.valid_for = :valid_for AND gc.ward_id IS NOT NULL
+        WHERE rp.valid_for = :valid_for
+            AND rp.model_version = :model_version
+            AND rp.combined_risk IS NOT NULL
+            AND gc.ward_id IS NOT NULL
     """
-    cell_predictions = query_df(sql, {"valid_for": valid_for})
+    cell_predictions = query_df(sql, {"valid_for": valid_for, "model_version": model_version})
     if cell_predictions.empty:
         return cell_predictions
 
@@ -94,7 +100,7 @@ def aggregate_for_timestamp(valid_for: pd.Timestamp) -> pd.DataFrame:
 
 
 def write_ward_risk(ward_risk: pd.DataFrame) -> None:
-    ward_risk.to_sql("ward_risk", get_engine(), if_exists="append", index=False)
+    upsert_dataframe(ward_risk, "ward_risk", conflict_columns=["ward_id", "valid_for"])
 
 
 if __name__ == "__main__":

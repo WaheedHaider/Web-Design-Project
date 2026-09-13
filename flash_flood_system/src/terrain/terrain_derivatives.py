@@ -16,6 +16,7 @@ from whitebox import WhiteboxTools
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from config.settings import PROJECTED_CRS
+from database.db_utils import query_df, upsert_dataframe
 
 wbt = WhiteboxTools()
 wbt.set_verbose_mode(False)
@@ -57,6 +58,13 @@ def compute_terrain_rasters(dem_path: str, output_dir: str, stream_threshold: fl
     wbt.extract_streams(paths["flow_accumulation"], paths["streams"], threshold=stream_threshold)
     wbt.euclidean_distance(paths["streams"], paths["distance_to_stream"])
 
+    # Not a derivative WhiteboxTools computes — the input DEM itself is the
+    # elevation raster. Included here so sample_terrain_to_grid() samples it
+    # alongside everything else instead of leaving elevation_m unpopulated
+    # (which would otherwise silently fail every downstream dropna() in
+    # src/ml/feature_engineering.py, since elevation_m is a required feature).
+    paths["elevation"] = dem
+
     return paths
 
 
@@ -80,6 +88,7 @@ def sample_terrain_to_grid(grid: gpd.GeoDataFrame, terrain_rasters: dict[str, st
 
     result = pd.DataFrame({"cell_code": grid["cell_code"].values})
     column_map = {
+        "elevation": "elevation_m",
         "slope": "slope_deg",
         "aspect": "aspect_deg",
         "flow_direction": "flow_direction",
@@ -94,6 +103,29 @@ def sample_terrain_to_grid(grid: gpd.GeoDataFrame, terrain_rasters: dict[str, st
     return result
 
 
+def write_terrain_features(terrain_df: pd.DataFrame) -> int:
+    """
+    Resolves cell_code -> cell_id against grid_cells (the grid must already be
+    loaded via src.spatial.load_grid_to_db) and upserts into terrain_features,
+    keyed on cell_id (its primary key).
+    """
+    cell_ids = query_df("SELECT cell_id, cell_code FROM grid_cells")
+    merged = terrain_df.merge(cell_ids, on="cell_code", how="inner")
+
+    unmatched = len(terrain_df) - len(merged)
+    if unmatched:
+        print(f"WARNING: {unmatched} cells had terrain values but no matching cell_code in grid_cells.")
+
+    feature_cols = [c for c in merged.columns if c not in ("cell_code", "cell_id")]
+    upsert_dataframe(
+        merged[["cell_id"] + feature_cols],
+        "terrain_features",
+        conflict_columns=["cell_id"],
+        update_columns=feature_cols,
+    )
+    return len(merged)
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -101,11 +133,22 @@ if __name__ == "__main__":
     parser.add_argument("--dem", required=True, help="Conditioned + reprojected DEM (see dem_processing.py)")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--grid", required=True, help="Prediction grid vector file (see grid_generator.py)")
-    parser.add_argument("--out-csv", required=True)
+    parser.add_argument("--out-csv", help="Also/instead save the sampled values to CSV")
+    parser.add_argument(
+        "--write-db", action="store_true",
+        help="Load into terrain_features (requires the grid already loaded via src.spatial.load_grid_to_db)",
+    )
     args = parser.parse_args()
+    if not args.out_csv and not args.write_db:
+        parser.error("Provide --out-csv and/or --write-db")
 
     rasters = compute_terrain_rasters(args.dem, args.output_dir)
     grid_gdf = gpd.read_file(args.grid)
     terrain_df = sample_terrain_to_grid(grid_gdf, rasters)
-    terrain_df.to_csv(args.out_csv, index=False)
-    print(f"Sampled terrain derivatives for {len(terrain_df)} cells -> {args.out_csv}")
+
+    if args.out_csv:
+        terrain_df.to_csv(args.out_csv, index=False)
+        print(f"Sampled terrain derivatives for {len(terrain_df)} cells -> {args.out_csv}")
+    if args.write_db:
+        n = write_terrain_features(terrain_df)
+        print(f"Loaded terrain_features for {n} cells.")

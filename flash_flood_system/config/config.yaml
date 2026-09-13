@@ -4,6 +4,11 @@
 project:
   name: flash_flood_system
   phase: 1 # current active development phase (1-7)
+  # Shared key tying together a hydrological-threat write (src/hydrology/ffg_engine.py)
+  # and the ML update that completes the same risk_predictions row
+  # (src/ml/predict.py). Bump when the pipeline logic changes enough that old
+  # and new predictions for the same cell/time shouldn't be merged.
+  model_version: v1
 
 study_area:
   # Phase 1 development scope. Architecture stays state-independent so

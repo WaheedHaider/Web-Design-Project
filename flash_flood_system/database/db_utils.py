@@ -1,8 +1,12 @@
 """SQLAlchemy engine + GeoPandas <-> PostGIS helpers shared across the pipeline."""
 from __future__ import annotations
 
+import uuid
+
 import geopandas as gpd
-from sqlalchemy import create_engine, text
+import pandas as pd
+from sqlalchemy import MetaData, Table, create_engine, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine
 
 import sys
@@ -47,10 +51,82 @@ def write_geodataframe(
 
 
 def query_df(sql: str, params: dict | None = None):
-    import pandas as pd
-
     with get_engine().connect() as conn:
         return pd.read_sql(text(sql), conn, params=params)
+
+
+def upsert_dataframe(
+    df: pd.DataFrame,
+    table_name: str,
+    conflict_columns: list[str],
+    update_columns: list[str] | None = None,
+) -> None:
+    """
+    INSERT ... ON CONFLICT (conflict_columns) DO UPDATE. Use when a row may or
+    may not already exist (e.g. the first hydrological_threat write for a new
+    cell/timestamp). `table_name` must already have a UNIQUE index/constraint
+    on exactly `conflict_columns` (see database/schema.sql).
+
+    update_columns defaults to every non-conflict column in df, but pass it
+    explicitly to update only some columns — e.g. writing hydrological_threat
+    without clobbering an ml_probability a later step may have already set.
+    """
+    if df.empty:
+        return
+
+    engine = get_engine()
+    metadata = MetaData()
+    table = Table(table_name, metadata, autoload_with=engine)
+
+    update_columns = update_columns or [c for c in df.columns if c not in conflict_columns]
+    records = df.where(pd.notnull(df), None).to_dict(orient="records")
+
+    stmt = pg_insert(table).values(records)
+    update_dict = {col: getattr(stmt.excluded, col) for col in update_columns}
+    stmt = stmt.on_conflict_do_update(index_elements=conflict_columns, set_=update_dict)
+
+    with engine.begin() as conn:
+        conn.execute(stmt)
+
+
+def bulk_update(
+    df: pd.DataFrame,
+    table_name: str,
+    key_columns: list[str],
+    update_columns: list[str],
+) -> int:
+    """
+    UPDATEs existing rows only (no insert), matched on key_columns, via a
+    throwaway staging table + a single UPDATE...FROM join. Use this instead
+    of upsert_dataframe when a row is REQUIRED to already exist — e.g.
+    predict.py filling in ml_probability/combined_risk/confidence on the row
+    src/hydrology/ffg_engine.py already wrote for that cell/valid_for/model_version.
+    Rows in df with no matching existing row are silently skipped (0 rows
+    updated for them) rather than inserted, since a prediction with no
+    hydrological_threat should not exist.
+    Returns the number of rows actually updated.
+    """
+    if df.empty:
+        return 0
+
+    engine = get_engine()
+    staging_table = f"_staging_{table_name}_{uuid.uuid4().hex[:8]}"
+    cols = key_columns + update_columns
+
+    with engine.begin() as conn:
+        df[cols].where(pd.notnull(df[cols]), None).to_sql(
+            staging_table, conn, index=False, if_exists="replace"
+        )
+        set_clause = ", ".join(f"{c} = s.{c}" for c in update_columns)
+        join_clause = " AND ".join(f"t.{c} = s.{c}" for c in key_columns)
+        result = conn.execute(
+            text(
+                f'UPDATE "{table_name}" t SET {set_clause} '
+                f'FROM "{staging_table}" s WHERE {join_clause}'
+            )
+        )
+        conn.execute(text(f'DROP TABLE "{staging_table}"'))
+        return result.rowcount
 
 
 if __name__ == "__main__":

@@ -36,6 +36,60 @@ All of the above is runnable code, but every script needs real input data
 this session could not fetch (large licensed/institutional geospatial datasets).
 **Nothing has been executed against real Uttarakhand data yet.**
 
+## Pipeline fixes (second pass — closing gaps found by inspection, not by running against data)
+
+These were found by re-reading the scaffold, not by hitting them at runtime —
+there's still no real data to run against. Each is a concrete bug or missing
+link, not a design opinion:
+
+- [x] `predict.py` read `hydrological_threat` from a column nothing ever wrote —
+      `ffg_engine.py` now writes it to `risk_predictions` first (`--valid-for`,
+      DB mode), and `predict.py` only proceeds for cells that row exists for.
+- [x] No uniqueness anywhere → reruns duplicated rows. Added unique indexes on
+      `rainfall`, `soil_moisture`, `risk_predictions`, `ward_risk`, plus a
+      generic `upsert_dataframe`/`bulk_update` in `database/db_utils.py`.
+- [x] `grid_cells.ward_id`/`village_id`/`watershed_id` were never populated —
+      added `src/spatial/assign_admin_watershed.py` (`ST_Within` on centroid).
+- [x] `confidence` was never computed — `predict.py` now derives it from
+      ML/hydrology agreement (placeholder pending Phase 7 calibration).
+- [x] Exact-timestamp joins between `rainfall` and `soil_moisture` would return
+      near-zero rows against real multi-source data (different revisit times) —
+      switched to an "as-of" `LATERAL` join in `feature_engineering.py`,
+      `predict.py`, and `ffg_engine.py`.
+- [x] `admin_boundaries.py` required parent FKs (`district_id`, ...) to be
+      hand-mapped — now resolved automatically via `ST_Within(ST_PointOnSurface(...))`
+      after each load, with unmatched-row counts printed for review.
+- [x] Single-`Polygon` shapefiles weren't actually converted to `MultiPolygon`
+      before insert (the old code's `unary_union` trick was a no-op on a lone
+      geometry) — fixed with `shapely.geometry.MultiPolygon([g])`.
+- [x] `elevation_m` is a required ML feature but nothing sampled it from the
+      DEM — every training/prediction row would have silently been dropped by
+      `dropna(subset=FEATURE_COLUMNS)`. `terrain_derivatives.py` now samples
+      the DEM itself for it.
+- [x] `feature_engineering.py`'s flood label used `flood_event_cells.cell_id
+      IS NOT NULL` (unconditional on time) instead of the time-windowed
+      `flood_events` join — this would have labeled *every* timestamp for a
+      once-flooded cell as positive, not just timestamps during the actual
+      event. Fixed to check the time-windowed join instead.
+- [x] No loader existed from a generated grid file into `grid_cells`, and no
+      loader from sampled terrain CSVs into `terrain_features` — added
+      `src/spatial/load_grid_to_db.py` and `terrain_derivatives.write_terrain_features`
+      (`--write-db`).
+- [x] Added GIST spatial indexes on every admin/hydro geometry column (only
+      `grid_cells` had one before) — needed for the `ST_Within` joins above to
+      be fast at scale.
+- [x] Added `src/ingestion/inspect_source.py` — prints CRS/columns/geometry
+      type for any downloaded shapefile or raster before you write a
+      `--column-map`, since Survey of India/HydroSHEDS files rarely match our
+      column names out of the box.
+
+**Still open** (documented, not yet fixed — need a decision or real data
+first): grid generation is in-memory and won't scale past a pilot watershed;
+WhiteboxTools/rasterio processing isn't tiled for a statewide DEM; ML training
+split is random rather than spatial/temporal (leakage risk); no
+orchestration/scheduler for Phase 2's real-time cadence; no tests; no API/dashboard.
+See `docs/ARCHITECTURE.md` for the scale/ML-quality recommendations.
+
 ## Not started
 
 - [ ] Download + inspect Uttarakhand admin shapefiles, HydroBASINS/HydroRIVERS, conditioned DEM, GSI landslide data
@@ -55,5 +109,6 @@ this session could not fetch (large licensed/institutional geospatial datasets).
 
 ## Immediate next step
 
-Follow `docs/PHASE1_GUIDE.md`: obtain the Uttarakhand shapefiles + conditioned
-DEM, then run the ingestion → grid → terrain scripts in order.
+Follow `docs/PHASE1_GUIDE.md` (updated run order: inspect → boundaries →
+grid+load → terrain+load → ward/watershed assignment) against whatever
+shapefiles/DEM you've already downloaded.
