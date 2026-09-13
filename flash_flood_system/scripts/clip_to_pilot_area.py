@@ -36,6 +36,19 @@ upstream catchments and recomputed values would be wrong near the edges.
 """
 from __future__ import annotations
 
+import os
+
+# Must run BEFORE geopandas/rasterio/pyproj are imported below. On machines
+# that also have PostgreSQL/PostGIS installed (common on this project), its
+# installer sets PROJ_LIB/PROJ_DATA to PostGIS's own (often older) proj.db,
+# which Python's pyproj/rasterio then pick up instead of their own bundled
+# one -- causing "DATABASE.LAYOUT.VERSION.MINOR ... comes from another PROJ
+# installation" on every raster operation. Clearing them here is scoped to
+# this process only; it does not touch your persistent environment
+# variables or affect PostgreSQL/PostGIS itself.
+os.environ.pop("PROJ_LIB", None)
+os.environ.pop("PROJ_DATA", None)
+
 import argparse
 import shutil
 import sys
@@ -43,6 +56,7 @@ import zipfile
 from pathlib import Path
 
 import geopandas as gpd
+import pyproj
 import rasterio
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window, from_bounds
@@ -122,8 +136,25 @@ def clip_vector(src_path: Path, dst_path: Path, bbox_4326: tuple[float, float, f
     try:
         gdf = gpd.read_file(src_path, bbox=bbox_geom)
     except Exception as exc:
-        print(f"  SKIP (unreadable: {exc}): {src_path.name}")
-        return False
+        # The bbox-filtered read asks GDAL to use the shapefile's .sbn/.sbx
+        # spatial index sidecar for a fast lookup. Those are optional and
+        # sometimes corrupted/incompatible (e.g. re-zipped on a different
+        # OS) even when the actual .shp/.dbf geometry is completely fine --
+        # "Invalid node descriptor size in .sbn" is exactly that. Fall back
+        # to a full read + in-memory filter, which never touches .sbn.
+        print(f"  bbox-indexed read failed ({exc}); retrying with a full read...")
+        try:
+            full = gpd.read_file(src_path)
+        except Exception as exc2:
+            print(f"  SKIP (unreadable: {exc2}): {src_path.name}")
+            return False
+
+        if full.crs is None:
+            print(f"  SKIP (no CRS defined): {src_path.name}")
+            return False
+        if full.crs.to_epsg() != 4326:
+            full = full.to_crs("EPSG:4326")
+        gdf = full[full.intersects(bbox_geom.iloc[0])]
 
     if gdf.empty:
         print(f"  SKIP (no features in pilot area): {src_path.name}")
@@ -215,6 +246,13 @@ def main() -> int:
              "re-run without --dry-run afterward and the extraction is reused, not redone.",
     )
     args = parser.parse_args()
+
+    print(f"PROJ data dir: {pyproj.datadir.get_data_dir()}")
+    if "postgis" in pyproj.datadir.get_data_dir().lower():
+        print(
+            "  WARNING: still resolving to a PostGIS-bundled proj.db -- the PROJ_LIB/PROJ_DATA "
+            "env var override didn't take effect. Raster clipping will likely fail again."
+        )
 
     input_dir = Path(args.input_dir).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()
