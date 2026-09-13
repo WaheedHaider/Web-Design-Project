@@ -34,6 +34,31 @@ This prints the CRS, geometry type, feature count, and every column name +
 a sample row (for vectors), or CRS/size/resolution/nodata (for rasters) —
 use the column names it prints to build your `--column-map` in step 3.
 
+### Clipping full-extent downloads first
+
+HydroSHEDS ships continent- or subcontinent-sized tiles, so a full download
+set runs to several GB while the pilot area needs a tiny fraction of it.
+`scripts/clip_to_pilot_area.py` cuts everything down to the 5 pilot districts
+(Uttarkashi, Chamoli, Rudraprayag, Bageshwar, Pithoragarh) losslessly:
+
+```bash
+python scripts/clip_to_pilot_area.py \
+    --input-dir  /path/to/full_downloads \
+    --output-dir /path/to/pilot_clipped
+```
+
+Rasters are windowed-read (a multi-GB DEM never loads fully into RAM) and
+rewritten with DEFLATE compression; vectors are bbox-filtered and written as
+single-file GeoPackages. Add `--dry-run` to preview, `--boundary <file>` to
+use a real district shapefile's extent instead of the built-in envelope.
+
+The default extent is deliberately padded (`--buffer-deg`, default 0.1°):
+flash-flood hydrology depends on upstream contributing area that often lies
+outside the district being assessed, so a tight district clip would discard
+terrain the model needs. For the same reason, use the flow-direction and
+flow-accumulation rasters as downloaded — do not recompute flow accumulation
+from a clipped DEM, since clipping truncates upstream catchments.
+
 Place raw downloads under `data/raw/` (gitignored):
 
 | Dataset | Where | Destination |
