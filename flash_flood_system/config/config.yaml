@@ -1,0 +1,57 @@
+# Non-secret configuration for the Flash Flood Prediction System.
+# Secrets (DB credentials, broker URLs) live in .env — see .env.example.
+
+project:
+  name: flash_flood_system
+  phase: 1 # current active development phase (1-7)
+
+study_area:
+  # Phase 1 development scope. Architecture stays state-independent so
+  # additional Himalayan states can be appended here later without code changes.
+  states:
+    - name: Uttarakhand
+      admin_levels: [state, district, tehsil, village]
+
+crs:
+  # All geometry is stored/processed in a projected CRS suitable for
+  # distance/area calculations over Uttarakhand, then reprojected to
+  # WGS84 (EPSG:4326) only for storage/serving to the frontend.
+  geographic: "EPSG:4326"
+  projected: "EPSG:32644" # UTM Zone 44N — covers Uttarakhand
+
+grid:
+  base_resolution_m: 250
+  high_risk_resolution_m: 100
+  high_risk_refine_threshold: 0.6 # cells with predicted risk >= this get refined
+
+dem:
+  source: HydroSHEDS
+  conditioning: conditioned # conditioned | void_filled
+  target_resolution_m: 30
+
+rainfall_windows_hours: [0.5, 1, 3, 6, 12, 24, 72]
+
+hydrology:
+  # Illustrative starting weights for the FFG-like dynamic threshold model.
+  # These are NOT final — Phase 3 calibrates them against historical events.
+  wetness_weight: 0.5
+  slope_weight: 0.2
+  twi_weight: 0.15
+  distance_to_stream_weight: 0.15
+  base_threshold_mm: 80 # rainfall (mm) a fully dry, low-risk cell can tolerate
+
+ward_aggregation:
+  # Weighted combination of grid-cell statistics into a ward-level score.
+  # Calibrate against historical backtesting in Phase 7.
+  weight_avg_risk: 0.3
+  weight_max_risk: 0.35
+  weight_high_risk_area_pct: 0.25
+  weight_exposure: 0.10
+  high_risk_cell_threshold: 0.6
+
+alerts:
+  risk_thresholds:
+    watch: 0.4
+    warning: 0.6
+    critical: 0.8
+  min_lead_time_minutes: 30
