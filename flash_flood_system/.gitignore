@@ -1,0 +1,28 @@
+# Environments
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Data (large binary datasets — never commit raw/processed geospatial data)
+data/raw/*/*
+data/processed/*/*
+data/weather/*
+!data/raw/*/.gitkeep
+!data/processed/*/.gitkeep
+!data/weather/.gitkeep
+
+outputs/**
+!outputs/.gitkeep
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Models
+*.pkl
+*.joblib
+*.model
+
+# OS
+.DS_Store
